@@ -1,0 +1,42 @@
+# Livox Mid-360S -> 2D LaserScan 변환 파라미터 (2D SLAM/Nav2, 수평 장착, 이동 로봇)
+#
+# '/**' 와일드카드를 사용하므로 노드 이름/네임스페이스와 무관하게 적용된다.
+# 전제:
+#   - /livox/lidar 가 sensor_msgs/PointCloud2 로 발행 (livox_ros_driver2 의 xfer_format=0)
+#   - target_frame(base_link)으로의 TF 존재 (수평 장착이면 회전 0, 위치 오프셋만)
+/**:
+  ros__parameters:
+    # 출력 좌표 프레임 (박스 필터/스캔 기준). TF 가 없으면 '' 로 두면 입력 cloud 프레임(livox_frame) 사용.
+    target_frame: "base_link"
+    transform_tolerance: 0.1
+
+    # z 범위 (수평 슬라이스). 센서 수평면 기준 얇게 잡아 바닥/천장 배제. 현장 튜닝.
+    min_height: -0.1
+    max_height: 0.2
+
+    # x/y 박스(crop) 필터. 기본 비활성. 특정 ROI/본체 제거가 필요할 때만 true 로.
+    # 범위는 target_frame(base_link) 기준.
+    use_box_filter: false
+    x_min: -40.0
+    x_max: 40.0
+    y_min: -40.0
+    y_max: 40.0
+
+    # 2D 스캔 각도 (360°, 1° 해상도). 단일 프레임으로 빈 bin 거의 없음.
+    angle_min: -3.14159265
+    angle_max: 3.14159265
+    angle_increment: 0.01745329   # 1 deg
+    scan_time: 0.1                # 10 Hz
+
+    # 반경 필터 + LaserScan 메시지 필드.
+    range_min: 0.15               # (0,0,0) 미반환점 + 근접 노이즈 제거 (사양 최소 0.1m)
+    range_max: 40.0               # Mid-360S 사양(10% 반사 40m)
+    use_inf: true
+    inf_epsilon: 1.0
+
+    # Livox tag 노이즈 필터: (tag & mask)!=0 이면 제거.
+    # 15(0x0F) = 공간노이즈(bit0-1)+강도노이즈(bit2-3). return-type 비트(4-7)는 유지.
+    tag_filter_enable: true
+    tag_filter_mask: 15
+
+    queue_size: 10

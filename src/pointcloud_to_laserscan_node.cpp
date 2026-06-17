@@ -75,6 +75,17 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
   inf_epsilon_ = this->declare_parameter("inf_epsilon", 1.0);
   use_inf_ = this->declare_parameter("use_inf", true);
 
+  // Axis-aligned box (crop) filter on x/y (z is covered by min_height_/max_height_).
+  use_box_filter_ = this->declare_parameter("use_box_filter", false);
+  x_min_ = this->declare_parameter("x_min", -std::numeric_limits<double>::infinity());
+  x_max_ = this->declare_parameter("x_max", std::numeric_limits<double>::infinity());
+  y_min_ = this->declare_parameter("y_min", -std::numeric_limits<double>::infinity());
+  y_max_ = this->declare_parameter("y_max", std::numeric_limits<double>::infinity());
+
+  // Livox tag noise filter: drop a point when (tag & tag_filter_mask_) != 0.
+  tag_filter_enable_ = this->declare_parameter("tag_filter_enable", false);
+  tag_filter_mask_ = this->declare_parameter("tag_filter_mask", 0x0F);
+
   pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", rclcpp::SensorDataQoS());
 
   using std::placeholders::_1;
@@ -175,11 +186,38 @@ void PointCloudToLaserScanNode::cloudCallback(
     }
   }
 
+  // Prepare optional Livox `tag` iterator (kept in lock-step with x/y/z below).
+  bool has_tag = false;
+  for (const auto & field : cloud_msg->fields) {
+    if (field.name == "tag") {
+      has_tag = true;
+      break;
+    }
+  }
+  const bool apply_tag_filter = tag_filter_enable_ && has_tag;
+  if (tag_filter_enable_ && !has_tag) {
+    RCLCPP_WARN_ONCE(
+      this->get_logger(),
+      "tag_filter_enable is set but the input cloud has no 'tag' field; tag filtering disabled.");
+  }
+  std::unique_ptr<sensor_msgs::PointCloud2ConstIterator<uint8_t>> iter_tag;
+  if (apply_tag_filter) {
+    iter_tag =
+      std::make_unique<sensor_msgs::PointCloud2ConstIterator<uint8_t>>(*cloud_msg, "tag");
+  }
+
   // Iterate through pointcloud
   for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(*cloud_msg, "x"),
     iter_y(*cloud_msg, "y"), iter_z(*cloud_msg, "z");
     iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z)
   {
+    // Advance the tag iterator every iteration so it stays aligned with x/y/z.
+    uint8_t tag_val = 0;
+    if (iter_tag) {
+      tag_val = **iter_tag;
+      ++(*iter_tag);
+    }
+
     if (std::isnan(*iter_x) || std::isnan(*iter_y) || std::isnan(*iter_z)) {
       RCLCPP_DEBUG(
         this->get_logger(),
@@ -188,11 +226,30 @@ void PointCloudToLaserScanNode::cloudCallback(
       continue;
     }
 
+    // Drop Livox noise points (dust/rain/fog/blooming) flagged by the tag field.
+    if (apply_tag_filter && (tag_val & static_cast<uint8_t>(tag_filter_mask_)) != 0) {
+      RCLCPP_DEBUG(
+        this->get_logger(),
+        "rejected for tag 0x%02x (mask 0x%02x)\n", tag_val, tag_filter_mask_);
+      continue;
+    }
+
     if (*iter_z > max_height_ || *iter_z < min_height_) {
       RCLCPP_DEBUG(
         this->get_logger(),
         "rejected for height %f not in range (%f, %f)\n",
         *iter_z, min_height_, max_height_);
+      continue;
+    }
+
+    // Axis-aligned box (crop) filter on x/y.
+    if (use_box_filter_ &&
+      (*iter_x < x_min_ || *iter_x > x_max_ || *iter_y < y_min_ || *iter_y > y_max_))
+    {
+      RCLCPP_DEBUG(
+        this->get_logger(),
+        "rejected for x/y (%f, %f) outside box ([%f,%f],[%f,%f])\n",
+        *iter_x, *iter_y, x_min_, x_max_, y_min_, y_max_);
       continue;
     }
 
