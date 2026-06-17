@@ -90,6 +90,9 @@ private:
   // ROS Parameters
   int input_queue_size_;
   std::string target_frame_;
+  // Input/output topic names (overridable via config; ROS remapping still applies on top).
+  std::string cloud_topic_;
+  std::string scan_topic_;
   double tolerance_;
   double min_height_, max_height_, angle_min_, angle_max_, angle_increment_, scan_time_, range_min_,
     range_max_;

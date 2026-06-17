@@ -59,6 +59,9 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
 : rclcpp::Node("pointcloud_to_laserscan", options)
 {
   target_frame_ = this->declare_parameter("target_frame", "");
+  // Input/output topic names (config-driven). ROS remapping still applies on top of these.
+  cloud_topic_ = this->declare_parameter("cloud_topic", "cloud_in");
+  scan_topic_ = this->declare_parameter("scan_topic", "scan");
   tolerance_ = this->declare_parameter("transform_tolerance", 0.01);
   // TODO(hidmic): adjust default input queue size based on actual concurrency levels
   // achievable by the associated executor
@@ -86,7 +89,7 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
   tag_filter_enable_ = this->declare_parameter("tag_filter_enable", false);
   tag_filter_mask_ = this->declare_parameter("tag_filter_mask", 0x0F);
 
-  pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", rclcpp::SensorDataQoS());
+  pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>(scan_topic_, rclcpp::SensorDataQoS());
 
   using std::placeholders::_1;
   // if pointcloud target frame specified, we need to filter by transform availability
@@ -131,7 +134,7 @@ void PointCloudToLaserScanNode::subscriptionListenerThreadLoop()
           "Got a subscriber to laserscan, starting pointcloud subscriber");
         rclcpp::SensorDataQoS qos;
         qos.keep_last(input_queue_size_);
-        sub_.subscribe(this, "cloud_in", qos.get_rmw_qos_profile());
+        sub_.subscribe(this, cloud_topic_, qos.get_rmw_qos_profile());
       }
     } else if (sub_.getSubscriber()) {
       RCLCPP_INFO(

@@ -1,9 +1,11 @@
 # Livox Mid-360S -> 2D LaserScan 변환 런치 (2D SLAM/Nav2, 수평 장착, 이동 로봇 기준)
 #
 # 파라미터는 config/mid360s_to_laserscan.yaml 에서 로드한다.
+# 입력/출력 토픽 이름(cloud_topic, scan_topic)도 config 에서 지정한다.
 # 다른 설정을 쓰려면 launch 인자 params_file 로 교체:
 #   ros2 launch pointcloud_to_laserscan mid360s_to_laserscan_launch.py \
 #       params_file:=/path/to/custom.yaml
+#   ros2 launch pointcloud_to_laserscan mid360s_to_laserscan_launch.py use_sim_time:=true
 #
 # 전제:
 #   - /livox/lidar 가 sensor_msgs/PointCloud2 로 발행 (livox_ros_driver2 의 xfer_format=0)
@@ -28,15 +30,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             name='params_file',
             default_value=default_params,
-            description='변환 노드 파라미터 YAML 경로',
-        ),
-        DeclareLaunchArgument(
-            name='cloud_in', default_value='/livox/lidar',
-            description='입력 PointCloud2 토픽',
-        ),
-        DeclareLaunchArgument(
-            name='scan', default_value='/scan',
-            description='출력 LaserScan 토픽',
+            description='변환 노드 파라미터 YAML 경로 (입출력 토픽 이름 포함)',
         ),
         DeclareLaunchArgument(
             name='use_sim_time', default_value='false',
@@ -46,10 +40,6 @@ def generate_launch_description():
             package='pointcloud_to_laserscan',
             executable='pointcloud_to_laserscan_node',
             name='pointcloud_to_laserscan',
-            remappings=[
-                ('cloud_in', LaunchConfiguration('cloud_in')),
-                ('scan', LaunchConfiguration('scan')),
-            ],
             parameters=[
                 LaunchConfiguration('params_file'),
                 {'use_sim_time': ParameterValue(
