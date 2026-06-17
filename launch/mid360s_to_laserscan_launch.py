@@ -16,6 +16,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -37,6 +38,10 @@ def generate_launch_description():
             name='scan', default_value='/scan',
             description='출력 LaserScan 토픽',
         ),
+        DeclareLaunchArgument(
+            name='use_sim_time', default_value='false',
+            description='시뮬레이션/bag 재생 시 /clock 사용 (params_file 값을 덮어씀)',
+        ),
         Node(
             package='pointcloud_to_laserscan',
             executable='pointcloud_to_laserscan_node',
@@ -45,6 +50,10 @@ def generate_launch_description():
                 ('cloud_in', LaunchConfiguration('cloud_in')),
                 ('scan', LaunchConfiguration('scan')),
             ],
-            parameters=[LaunchConfiguration('params_file')],
+            parameters=[
+                LaunchConfiguration('params_file'),
+                {'use_sim_time': ParameterValue(
+                    LaunchConfiguration('use_sim_time'), value_type=bool)},
+            ],
         ),
     ])

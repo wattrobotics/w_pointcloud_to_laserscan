@@ -6,6 +6,9 @@
 #   - target_frame(base_link)으로의 TF 존재 (수평 장착이면 회전 0, 위치 오프셋만)
 /**:
   ros__parameters:
+    # 시뮬레이션/bag 재생 시 /clock 시간 사용 (SLAM/Nav2 와 시간 동기를 맞출 때 true).
+    use_sim_time: false
+
     # 출력 좌표 프레임 (박스 필터/스캔 기준). TF 가 없으면 '' 로 두면 입력 cloud 프레임(livox_frame) 사용.
     target_frame: "base_link"
     transform_tolerance: 0.1
