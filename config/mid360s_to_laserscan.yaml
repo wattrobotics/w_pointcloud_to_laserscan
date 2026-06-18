@@ -18,8 +18,10 @@
     transform_tolerance: 0.1
 
     # z 범위 (수평 슬라이스). 센서 수평면 기준 얇게 잡아 바닥/천장 배제. 현장 튜닝.
-    min_height: 0.1
-    max_height: 0.2
+    # Mid-360S: baselink 기준 +0.942
+    # Mid-360S: basefootprint 기준 +1.176
+    min_height: 1.142
+    max_height: 1.242
 
     # x/y 자가(self) 필터: 박스 "안쪽"의 점(=로봇 본체)을 제거. 기본 비활성.
     # 범위는 target_frame(base_link) 기준. 값은 로봇 footprint(여유 포함).
