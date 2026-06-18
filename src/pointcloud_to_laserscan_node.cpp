@@ -78,12 +78,13 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
   inf_epsilon_ = this->declare_parameter("inf_epsilon", 1.0);
   use_inf_ = this->declare_parameter("use_inf", true);
 
-  // Axis-aligned box (crop) filter on x/y (z is covered by min_height_/max_height_).
-  use_box_filter_ = this->declare_parameter("use_box_filter", false);
-  x_min_ = this->declare_parameter("x_min", -std::numeric_limits<double>::infinity());
-  x_max_ = this->declare_parameter("x_max", std::numeric_limits<double>::infinity());
-  y_min_ = this->declare_parameter("y_min", -std::numeric_limits<double>::infinity());
-  y_max_ = this->declare_parameter("y_max", std::numeric_limits<double>::infinity());
+  // Axis-aligned self-filter on x/y: drop points INSIDE the box (robot body).
+  // Defaults to a zero-size box so an accidental enable removes nothing.
+  use_self_filter_ = this->declare_parameter("use_self_filter", false);
+  self_x_min_ = this->declare_parameter("self_x_min", 0.0);
+  self_x_max_ = this->declare_parameter("self_x_max", 0.0);
+  self_y_min_ = this->declare_parameter("self_y_min", 0.0);
+  self_y_max_ = this->declare_parameter("self_y_max", 0.0);
 
   // Livox tag noise filter: drop a point when (tag & tag_filter_mask_) != 0.
   tag_filter_enable_ = this->declare_parameter("tag_filter_enable", false);
@@ -245,14 +246,15 @@ void PointCloudToLaserScanNode::cloudCallback(
       continue;
     }
 
-    // Axis-aligned box (crop) filter on x/y.
-    if (use_box_filter_ &&
-      (*iter_x < x_min_ || *iter_x > x_max_ || *iter_y < y_min_ || *iter_y > y_max_))
+    // Axis-aligned self-filter on x/y: drop points INSIDE the body box.
+    if (use_self_filter_ &&
+      (*iter_x >= self_x_min_ && *iter_x <= self_x_max_ &&
+       *iter_y >= self_y_min_ && *iter_y <= self_y_max_))
     {
       RCLCPP_DEBUG(
         this->get_logger(),
-        "rejected for x/y (%f, %f) outside box ([%f,%f],[%f,%f])\n",
-        *iter_x, *iter_y, x_min_, x_max_, y_min_, y_max_);
+        "rejected for x/y (%f, %f) inside self box ([%f,%f],[%f,%f])\n",
+        *iter_x, *iter_y, self_x_min_, self_x_max_, self_y_min_, self_y_max_);
       continue;
     }
 

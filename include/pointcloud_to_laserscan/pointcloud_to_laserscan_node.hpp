@@ -99,10 +99,10 @@ private:
   bool use_inf_;
   double inf_epsilon_;
 
-  // Axis-aligned box (crop) filter. z is handled by min_height_/max_height_; this adds x/y bounds.
-  // Bounds are evaluated in the cloud frame after the optional target_frame transform.
-  bool use_box_filter_;
-  double x_min_, x_max_, y_min_, y_max_;
+  // Axis-aligned self-filter: drop points that fall INSIDE this x/y box (the robot body).
+  // z is handled by min_height_/max_height_. Bounds are evaluated in target_frame (base_link).
+  bool use_self_filter_;
+  double self_x_min_, self_x_max_, self_y_min_, self_y_max_;
 
   // Livox `tag` based noise filter. A point is dropped when (tag & tag_filter_mask_) != 0.
   // Default mask 0x0F covers spatial-noise (bits 0-1) and intensity-noise (bits 2-3) groups,

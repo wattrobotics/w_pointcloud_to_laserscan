@@ -11,23 +11,23 @@
 
     # 입력/출력 토픽 이름. (ROS remapping 을 쓰면 그쪽이 우선 적용됨)
     cloud_topic: "/livox/lidar"
-    scan_topic: "/scan"
+    scan_topic: "/scan/mid360s"
 
     # 출력 좌표 프레임 (박스 필터/스캔 기준). TF 가 없으면 '' 로 두면 입력 cloud 프레임(livox_frame) 사용.
     target_frame: "base_link"
     transform_tolerance: 0.1
 
     # z 범위 (수평 슬라이스). 센서 수평면 기준 얇게 잡아 바닥/천장 배제. 현장 튜닝.
-    min_height: -0.1
+    min_height: 0.1
     max_height: 0.2
 
-    # x/y 박스(crop) 필터. 기본 비활성. 특정 ROI/본체 제거가 필요할 때만 true 로.
-    # 범위는 target_frame(base_link) 기준.
-    use_box_filter: false
-    x_min: -40.0
-    x_max: 40.0
-    y_min: -40.0
-    y_max: 40.0
+    # x/y 자가(self) 필터: 박스 "안쪽"의 점(=로봇 본체)을 제거. 기본 비활성.
+    # 범위는 target_frame(base_link) 기준. 값은 로봇 footprint(여유 포함).
+    use_self_filter: true
+    self_x_min: -0.51
+    self_x_max: 0.45
+    self_y_min: -0.31
+    self_y_max: 0.31
 
     # 2D 스캔 각도 (360°, 1° 해상도). 단일 프레임으로 빈 bin 거의 없음.
     angle_min: -3.14159265
@@ -36,7 +36,7 @@
     scan_time: 0.1                # 10 Hz
 
     # 반경 필터 + LaserScan 메시지 필드.
-    range_min: 0.15               # (0,0,0) 미반환점 + 근접 노이즈 제거 (사양 최소 0.1m)
+    range_min: 0.10               # (0,0,0) 미반환점 + 근접 노이즈 제거 (사양 최소 0.1m)
     range_max: 40.0               # Mid-360S 사양(10% 반사 40m)
     use_inf: true
     inf_epsilon: 1.0
