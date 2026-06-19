@@ -26,10 +26,10 @@
     # x/y 자가(self) 필터: 박스 "안쪽"의 점(=로봇 본체)을 제거. 기본 비활성.
     # 범위는 target_frame(base_link) 기준. 값은 로봇 footprint(여유 포함).
     use_self_filter: true
-    self_x_min: -0.51
-    self_x_max: 0.45
-    self_y_min: -0.31
-    self_y_max: 0.31
+    self_x_min: -0.52
+    self_x_max: 0.46
+    self_y_min: -0.32
+    self_y_max: 0.32
 
     # 2D 스캔 각도 (360°, 1° 해상도). 단일 프레임으로 빈 bin 거의 없음.
     angle_min: -3.14159265
