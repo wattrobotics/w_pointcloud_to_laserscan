@@ -11,7 +11,7 @@
 
     # 입력/출력 토픽 이름. (ROS remapping 을 쓰면 그쪽이 우선 적용됨)
     cloud_topic: "/livox/lidar"
-    scan_topic: "/scan/mid360s"
+    scan_topic: "/livox/lidar/scan"
 
     # 출력 좌표 프레임 (박스 필터/스캔 기준). TF 가 없으면 '' 로 두면 입력 cloud 프레임(livox_frame) 사용.
     target_frame: "base_link"
