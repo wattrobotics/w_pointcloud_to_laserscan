@@ -1,0 +1,61 @@
+# Livox Mid-360S -> 2D LaserScan (로컬라이제이션 검토용 2 m 슬라이스)
+#
+# mid360s_to_laserscan.yaml 의 사본이며 **높이와 출력 토픽만** 다르다.
+# 운용 중인 1.2 m 슬라이스(/livox/lidar/scan)는 그대로 두고, 사람 머리 위 높이의
+# 스캔이 실제로 어떻게 찍히는지 RViz 로 보기 위한 두 번째 인스턴스다.
+# 아직 어떤 노드도 이 토픽을 구독하지 않는다 — 순수 관찰용.
+#
+# ── 높이 근거 (URDF robot.urdf) ────────────────────────────────────────────
+#   base_footprint → base_link  : +0.058   (base_link_joint)
+#   base_link      → laser_3D_link: +1.1216 (laser_3D_joint)
+#   ⇒ 라이다는 바닥 기준 1.180 m. target_frame 이 base_link 이므로 아래 높이도
+#     base_link 기준이고, 바닥 기준으로는 +0.058 을 더한 값이다.
+#
+#   min/max_height 1.892~1.992 = 바닥 기준 **1.950~2.050 m**
+#
+# ── 보이지 않을 수 있다 (설계상 당연) ─────────────────────────────────────
+# 센서(1.180 m)에서 2.0 m 를 보려면 위로 0.77~0.87 m 를 올려다봐야 한다. 필요한
+# 앙각은 거리에 반비례하고 Mid-360 수직 FOV 상단은 +52°(사양) 다:
+#   벽까지 0.5 m → 57~60°(FOV 밖) · 0.7 m → 48~51° · 1.0 m → 38~41° · 5 m → 9~10°
+# 즉 **복도·홀에서는 잘 보이고, 엘리베이터 카 안(벽까지 0.35~0.7 m)에서는 거의
+# 안 보인다.** RViz 로 볼 때 이 차이를 먼저 확인한다.
+#
+# 커버리지가 너무 얇으면 첫 번째 손잡이는 **두께**다 (max_height 를 올려 0.2 m 로).
+# 높이를 낮추는 것(1.6~1.75 m)이 두 번째 손잡이인데, 그만큼 사람 머리에 가까워진다.
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+    cloud_topic: "/livox/lidar"
+    scan_topic: "/livox/lidar/scan_2m"
+
+    target_frame: "base_link"
+    transform_tolerance: 0.1
+
+    # 바닥 기준 1.950~2.050 m (위 '높이 근거' 참조).
+    min_height: 1.892
+    max_height: 1.992
+
+    # 자가(self) 필터: 원본과 동일. 팔 컬럼(x≈0.305, y≈-0.085)이 이 박스 안이라
+    # 리프트를 올려도 기둥 자체는 걸러진다. 다만 박스는 x/y 뿐이고 높이 조건이
+    # 없으므로, 팔을 뻗은 자세에서 손끝이 이 슬라이스에 들어올 수 있다.
+    use_self_filter: true
+    self_x_min: -0.407
+    self_x_max: 0.401
+    self_y_min: -0.250
+    self_y_max: 0.250
+
+    angle_min: -3.14159265
+    angle_max: 3.14159265
+    angle_increment: 0.01745329   # 1 deg
+    scan_time: 0.1                # 10 Hz
+
+    range_min: 0.10
+    range_max: 40.0
+    use_inf: true
+    inf_epsilon: 1.0
+
+    tag_filter_enable: true
+    tag_filter_mask: 15
+
+    queue_size: 10

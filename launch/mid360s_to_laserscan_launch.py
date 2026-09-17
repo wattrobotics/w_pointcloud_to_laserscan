@@ -36,10 +36,16 @@ def generate_launch_description():
             name='use_sim_time', default_value='false',
             description='시뮬레이션/bag 재생 시 /clock 사용 (params_file 값을 덮어씀)',
         ),
+        DeclareLaunchArgument(
+            name='node_name', default_value='pointcloud_to_laserscan',
+            description='노드 이름. 같은 런치를 다른 params_file 로 여러 번 띄울 때 '
+                        '(예: 높이가 다른 슬라이스) 이름이 겹치지 않게 바꾼다. '
+                        'params yaml 이 /** 와일드카드라 이름을 바꿔도 값은 그대로 먹는다.',
+        ),
         Node(
             package='pointcloud_to_laserscan',
             executable='pointcloud_to_laserscan_node',
-            name='pointcloud_to_laserscan',
+            name=LaunchConfiguration('node_name'),
             parameters=[
                 LaunchConfiguration('params_file'),
                 {'use_sim_time': ParameterValue(
