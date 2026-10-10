@@ -47,6 +47,12 @@
     self_y_min: -0.3367
     self_y_max: 0.3197
 
+    # footprint 토픽 자가 필터: 원본과 동일(mid360s_to_laserscan.yaml 의 주석이 정본).
+    # 토픽을 켜면 팔을 뻗은 자세의 손끝도 폴리곤으로 걸러진다(z 는 무시).
+    self_footprint_topic: ""
+    self_footprint_timeout: 0.5
+    self_footprint_padding: 0.04
+
     angle_min: -3.14159265
     angle_max: 3.14159265
     angle_increment: 0.01745329   # 1 deg

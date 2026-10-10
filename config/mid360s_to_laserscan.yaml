@@ -45,6 +45,17 @@
     self_y_min: -0.3367
     self_y_max: 0.3197
 
+    # footprint 토픽 자가 필터: 고정 박스 ∪ (footprint 폴리곤 + padding). 박스 안쪽 점은 그대로
+    # 지우고, 폴리곤은 팔처럼 박스 밖으로 나온 부분만 더 지운다. 오목 폴리곤도 정확히 처리.
+    # 토픽이 timeout 넘게 끊기거나 TF 변환이 안 되면 고정 박스만으로 fallback.
+    #   "" 이면 비활성(고정 박스만). 후보:
+    #     /footprint_projector/footprint_concave  /footprint_projector/footprint_convex
+    #   시작 시 1회 읽으므로 바꾸면 노드 재시작. use_self_filter: false 면 무시.
+    #   z 는 무시(폴리곤은 전 높이 링크를 바닥에 투영한 것).
+    self_footprint_topic: ""
+    self_footprint_timeout: 0.5   # [s] projector 10Hz 기준 5주기
+    self_footprint_padding: 0.04  # [m] 폴리곤 바깥 여유. 고정 박스 마진과 동일
+
     # 2D 스캔 각도 (360°, 1° 해상도). 단일 프레임으로 빈 bin 거의 없음.
     angle_min: -3.14159265
     angle_max: 3.14159265

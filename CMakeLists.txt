@@ -3,6 +3,7 @@ project(pointcloud_to_laserscan)
 
 find_package(ament_cmake REQUIRED)
 
+find_package(geometry_msgs REQUIRED)
 find_package(laser_geometry REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -42,6 +43,7 @@ target_include_directories(pointcloud_to_laserscan PUBLIC
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
 )
 target_link_libraries(pointcloud_to_laserscan
+  ${geometry_msgs_TARGETS}
   laser_geometry::laser_geometry
   message_filters::message_filters
   rclcpp::rclcpp
@@ -93,6 +95,7 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_dependencies(
+  geometry_msgs
   laser_geometry
   message_filters
   rclcpp

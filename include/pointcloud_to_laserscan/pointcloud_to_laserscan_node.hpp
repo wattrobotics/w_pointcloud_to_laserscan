@@ -42,10 +42,14 @@
 #define POINTCLOUD_TO_LASERSCAN__POINTCLOUD_TO_LASERSCAN_NODE_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "geometry_msgs/msg/polygon_stamped.hpp"
 #include "message_filters/subscriber.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/message_filter.h"
@@ -74,7 +78,24 @@ public:
   ~PointCloudToLaserScanNode() override;
 
 private:
+  // Footprint polygon pre-computed in target_frame: edges + padded bbox, built at footprint rate.
+  struct FootprintEdge
+  {
+    double ax, ay, ex, ey, inv_len2;
+  };
+  struct SelfFootprint
+  {
+    std::vector<FootprintEdge> edges;
+    double x_min, x_max, y_min, y_max;
+    std::chrono::steady_clock::time_point received;
+  };
+
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud_msg);
+
+  void footprintCallback(geometry_msgs::msg::PolygonStamped::ConstSharedPtr msg);
+
+  // Inside the polygon (even-odd) OR within padding of any edge. Works for concave polygons.
+  bool insideFootprint(const SelfFootprint & fp, double x, double y) const;
 
   void subscriptionListenerThreadLoop();
 
@@ -103,6 +124,17 @@ private:
   // z is handled by min_height_/max_height_. Bounds are evaluated in target_frame (base_link).
   bool use_self_filter_;
   double self_x_min_, self_x_max_, self_y_min_, self_y_max_;
+
+  // Optional footprint-topic self-filter, applied as a UNION with the box above.
+  // Empty topic disables it. Falls back to the box alone when the topic is stale.
+  std::string self_footprint_topic_;
+  double self_footprint_timeout_;
+  double self_footprint_padding_;
+  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_sub_;
+  // Swapped by footprintCallback; cloudCallback may run on the TF listener thread.
+  std::mutex footprint_mutex_;
+  std::shared_ptr<const SelfFootprint> footprint_;
+  std::atomic_bool footprint_active_{false};
 
   // Livox `tag` based noise filter. A point is dropped when (tag & tag_filter_mask_) != 0.
   // Default mask 0x0F covers spatial-noise (bits 0-1) and intensity-noise (bits 2-3) groups,

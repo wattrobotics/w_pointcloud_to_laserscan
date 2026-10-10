@@ -40,6 +40,7 @@
 
 #include "pointcloud_to_laserscan/pointcloud_to_laserscan_node.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <limits>
@@ -49,6 +50,7 @@
 #include <utility>
 
 #include "sensor_msgs/point_cloud2_iterator.hpp"
+#include "tf2/LinearMath/Transform.hpp"
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #include "tf2_ros/create_timer_ros.h"
 
@@ -86,6 +88,12 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
   self_y_min_ = this->declare_parameter("self_y_min", 0.0);
   self_y_max_ = this->declare_parameter("self_y_max", 0.0);
 
+  // Footprint-topic self-filter (geometry_msgs/PolygonStamped), unioned with the box above.
+  // Empty topic = box only. Stale (> timeout) or untransformable polygon = box only.
+  self_footprint_topic_ = this->declare_parameter("self_footprint_topic", "");
+  self_footprint_timeout_ = this->declare_parameter("self_footprint_timeout", 0.5);
+  self_footprint_padding_ = this->declare_parameter("self_footprint_padding", 0.04);
+
   // Livox tag noise filter: drop a point when (tag & tag_filter_mask_) != 0.
   tag_filter_enable_ = this->declare_parameter("tag_filter_enable", false);
   tag_filter_mask_ = this->declare_parameter("tag_filter_mask", 0x0F);
@@ -108,6 +116,24 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
       std::bind(&PointCloudToLaserScanNode::cloudCallback, this, _1));
   } else {  // otherwise setup direct subscription
     sub_.registerCallback(std::bind(&PointCloudToLaserScanNode::cloudCallback, this, _1));
+  }
+
+  if (use_self_filter_ && !self_footprint_topic_.empty()) {
+    if (target_frame_.empty()) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "self_footprint_topic '%s' needs target_frame for TF; using fixed self box only.",
+        self_footprint_topic_.c_str());
+    } else {
+      footprint_sub_ = this->create_subscription<geometry_msgs::msg::PolygonStamped>(
+        self_footprint_topic_, rclcpp::QoS(1),
+        std::bind(&PointCloudToLaserScanNode::footprintCallback, this, _1));
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Self filter: fixed box UNION footprint '%s' (padding %.3f m, timeout %.2f s). "
+        "Fixed box only until the footprint arrives.",
+        self_footprint_topic_.c_str(), self_footprint_padding_, self_footprint_timeout_);
+    }
   }
 
   subscription_listener_thread_ = std::thread(
@@ -147,6 +173,89 @@ void PointCloudToLaserScanNode::subscriptionListenerThreadLoop()
     this->wait_for_graph_change(event, timeout);
   }
   sub_.unsubscribe();
+}
+
+void PointCloudToLaserScanNode::footprintCallback(
+  geometry_msgs::msg::PolygonStamped::ConstSharedPtr msg)
+{
+  // Invalid or untransformable polygon clears the footprint -> fixed box only.
+  std::shared_ptr<SelfFootprint> fp;
+  const auto & pts = msg->polygon.points;
+  if (pts.size() < 3) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000,
+      "Footprint '%s' has %zu points (< 3); ignored.", self_footprint_topic_.c_str(), pts.size());
+  } else {
+    try {
+      // Latest TF: footprint frame -> target_frame is static (base_footprint -> base_link).
+      const auto t = tf2_->lookupTransform(
+        target_frame_, msg->header.frame_id, tf2::TimePointZero).transform;
+      const tf2::Transform tf(
+        tf2::Quaternion(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w),
+        tf2::Vector3(t.translation.x, t.translation.y, t.translation.z));
+
+      std::vector<tf2::Vector3> v;
+      v.reserve(pts.size());
+      for (const auto & p : pts) {
+        v.push_back(tf * tf2::Vector3(p.x, p.y, p.z));
+      }
+
+      fp = std::make_shared<SelfFootprint>();
+      fp->x_min = fp->y_min = std::numeric_limits<double>::max();
+      fp->x_max = fp->y_max = std::numeric_limits<double>::lowest();
+      for (size_t i = 0; i < v.size(); ++i) {
+        const tf2::Vector3 & a = v[i];
+        const tf2::Vector3 & b = v[(i + 1) % v.size()];
+        const double ex = b.x() - a.x();
+        const double ey = b.y() - a.y();
+        const double len2 = ex * ex + ey * ey;
+        if (len2 > 1e-12) {  // skip duplicate vertices
+          fp->edges.push_back({a.x(), a.y(), ex, ey, 1.0 / len2});
+        }
+        fp->x_min = std::min(fp->x_min, a.x());
+        fp->x_max = std::max(fp->x_max, a.x());
+        fp->y_min = std::min(fp->y_min, a.y());
+        fp->y_max = std::max(fp->y_max, a.y());
+      }
+      fp->x_min -= self_footprint_padding_;
+      fp->x_max += self_footprint_padding_;
+      fp->y_min -= self_footprint_padding_;
+      fp->y_max += self_footprint_padding_;
+      fp->received = std::chrono::steady_clock::now();
+    } catch (tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Footprint TF %s -> %s failed: %s", msg->header.frame_id.c_str(),
+        target_frame_.c_str(), ex.what());
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(footprint_mutex_);
+  footprint_ = fp;
+}
+
+bool PointCloudToLaserScanNode::insideFootprint(
+  const SelfFootprint & fp, double x, double y) const
+{
+  if (x < fp.x_min || x > fp.x_max || y < fp.y_min || y > fp.y_max) {
+    return false;
+  }
+  const double pad2 = self_footprint_padding_ * self_footprint_padding_;
+  bool inside = false;
+  for (const auto & e : fp.edges) {
+    // Even-odd crossing test (ray towards +x).
+    if (((e.ay + e.ey) > y) != (e.ay > y) && x < e.ax + e.ex * (y - e.ay) / e.ey) {
+      inside = !inside;
+    }
+    // Padding band: distance from (x, y) to this edge segment.
+    const double t = std::clamp(((x - e.ax) * e.ex + (y - e.ay) * e.ey) * e.inv_len2, 0.0, 1.0);
+    const double dx = x - (e.ax + t * e.ex);
+    const double dy = y - (e.ay + t * e.ey);
+    if (dx * dx + dy * dy < pad2) {
+      return true;
+    }
+  }
+  return inside;
 }
 
 void PointCloudToLaserScanNode::cloudCallback(
@@ -210,6 +319,33 @@ void PointCloudToLaserScanNode::cloudCallback(
       std::make_unique<sensor_msgs::PointCloud2ConstIterator<uint8_t>>(*cloud_msg, "tag");
   }
 
+  // Footprint polygon for this frame (null = fixed self box only).
+  std::shared_ptr<const SelfFootprint> footprint;
+  if (footprint_sub_) {
+    {
+      std::lock_guard<std::mutex> lock(footprint_mutex_);
+      footprint = footprint_;
+    }
+    if (footprint && std::chrono::steady_clock::now() - footprint->received >
+      std::chrono::duration<double>(self_footprint_timeout_))
+    {
+      footprint.reset();
+    }
+    const bool active = static_cast<bool>(footprint);
+    if (footprint_active_.exchange(active) != active) {
+      if (active) {
+        RCLCPP_INFO(
+          this->get_logger(), "Footprint '%s' active: self filter = fixed box UNION footprint.",
+          self_footprint_topic_.c_str());
+      } else {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Footprint '%s' lost (stale > %.2f s or invalid): fixed self box only.",
+          self_footprint_topic_.c_str(), self_footprint_timeout_);
+      }
+    }
+  }
+
   // Iterate through pointcloud
   for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(*cloud_msg, "x"),
     iter_y(*cloud_msg, "y"), iter_z(*cloud_msg, "z");
@@ -246,14 +382,16 @@ void PointCloudToLaserScanNode::cloudCallback(
       continue;
     }
 
-    // Axis-aligned self-filter on x/y: drop points INSIDE the body box.
+    // Self-filter on x/y: drop points INSIDE the body box, or (union) inside the padded footprint.
+    // The box is checked first so body points never reach the polygon test.
     if (use_self_filter_ &&
-      (*iter_x >= self_x_min_ && *iter_x <= self_x_max_ &&
-       *iter_y >= self_y_min_ && *iter_y <= self_y_max_))
+      ((*iter_x >= self_x_min_ && *iter_x <= self_x_max_ &&
+      *iter_y >= self_y_min_ && *iter_y <= self_y_max_) ||
+      (footprint && insideFootprint(*footprint, *iter_x, *iter_y))))
     {
       RCLCPP_DEBUG(
         this->get_logger(),
-        "rejected for x/y (%f, %f) inside self box ([%f,%f],[%f,%f])\n",
+        "rejected for x/y (%f, %f) inside self box ([%f,%f],[%f,%f]) or footprint\n",
         *iter_x, *iter_y, self_x_min_, self_x_max_, self_y_min_, self_y_max_);
       continue;
     }
