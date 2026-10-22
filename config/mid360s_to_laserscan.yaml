@@ -73,4 +73,25 @@
     tag_filter_enable: true
     tag_filter_mask: 15
 
+    # 근거리 고스트 필터: 촘촘한 면 바로 앞에 떠 있는 '듬성한 점'을 그 면으로 대체한다. 기본 비활성.
+    #   지지(support): 라이다에서 수평 max_check_range 안의 슬랩 점마다, 반경 max(min_radius, radius_ratio×r)
+    #     (r = 라이다까지 3D 거리) 안에 다른 슬랩 점이 min_neighbors 개 이상이면 지지됨. 반경을 거리에 비례시켜
+    #     실제 면이면 거리와 무관하게 비슷한 이웃 수가 나오게 했다. 이웃은 슬랩(min/max_height) 안 점만 센다.
+    #   칸 판정: 칸의 최소점이 지지 안 됐고, 같은 칸의 지지점이 behind_distance 안 뒤에 있으면 그 거리로 바꾼다.
+    #     그렇지 않으면 그대로 둔다 → 칸이 비지 않고, 최대 behind_distance 만큼만 물러난다.
+    #   잡지 못하는 것: 서로 뭉쳐 지지받는 고스트, 면 뒤쪽 허상(거울). 지워질 수 있는 실물: 촘촘한 면 앞
+    #     behind_distance 안의 가늘고 듬성한 물체.
+    # center = 라이다 원점의 base_link 좌표(URDF laser_3D_joint).
+    # [2026-10-22] bb_1022_livox 원본 클라우드 검증: 카 안 근접 고스트 칸 95.5% 제거, 1 m 안 다른 칸 변화
+    #   카 안 1.45 / 홀 0.17 칸/프레임 — cf_1021_random/2_ev_board_jitter/scan_filter/ghost3d/
+    ghost_filter_enable: false
+    ghost_filter_center_x: 0.2767
+    ghost_filter_center_y: 0.1465
+    ghost_filter_center_z: 1.1216
+    ghost_filter_radius_ratio: 0.10
+    ghost_filter_min_radius: 0.02
+    ghost_filter_min_neighbors: 8
+    ghost_filter_max_check_range: 1.5
+    ghost_filter_behind_distance: 0.15
+
     queue_size: 10

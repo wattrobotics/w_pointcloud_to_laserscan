@@ -59,6 +59,7 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 
+#include "pointcloud_to_laserscan/ghost_filter.hpp"
 #include "pointcloud_to_laserscan/visibility_control.h"
 
 namespace pointcloud_to_laserscan
@@ -141,6 +142,11 @@ private:
   // leaving return-type bits (4-7) untouched. Ignored if the cloud has no `tag` field.
   bool tag_filter_enable_;
   int tag_filter_mask_;
+
+  // Sparse near-field ghost filter (ghost_filter.hpp): a sparse slab point floating at most
+  // behind_distance in front of a dense surface is replaced by that surface in its bin.
+  bool ghost_filter_enable_;
+  GhostFilterParams ghost_params_;
 };
 
 }  // namespace pointcloud_to_laserscan

@@ -98,6 +98,27 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
   tag_filter_enable_ = this->declare_parameter("tag_filter_enable", false);
   tag_filter_mask_ = this->declare_parameter("tag_filter_mask", 0x0F);
 
+  // Sparse near-field ghost filter. Center = sensor origin in target_frame.
+  ghost_filter_enable_ = this->declare_parameter("ghost_filter_enable", false);
+  ghost_params_.center_x = this->declare_parameter("ghost_filter_center_x", 0.0);
+  ghost_params_.center_y = this->declare_parameter("ghost_filter_center_y", 0.0);
+  ghost_params_.center_z = this->declare_parameter("ghost_filter_center_z", 0.0);
+  ghost_params_.radius_ratio = this->declare_parameter("ghost_filter_radius_ratio", 0.10);
+  ghost_params_.min_radius = this->declare_parameter("ghost_filter_min_radius", 0.02);
+  ghost_params_.min_neighbors = static_cast<int>(
+    this->declare_parameter("ghost_filter_min_neighbors", 8));
+  ghost_params_.max_check_range = this->declare_parameter("ghost_filter_max_check_range", 1.5);
+  ghost_params_.behind_distance = this->declare_parameter("ghost_filter_behind_distance", 0.15);
+  if (ghost_filter_enable_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Ghost filter: points within %.2f m of (%.3f, %.3f, %.3f) need >= %d neighbors within "
+      "max(%.3f, %.3f * r); a sparse nearest point yields to a supported one <= %.2f m behind.",
+      ghost_params_.max_check_range, ghost_params_.center_x, ghost_params_.center_y,
+      ghost_params_.center_z, ghost_params_.min_neighbors, ghost_params_.min_radius,
+      ghost_params_.radius_ratio, ghost_params_.behind_distance);
+  }
+
   pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>(scan_topic_, rclcpp::SensorDataQoS());
 
   using std::placeholders::_1;
@@ -346,6 +367,11 @@ void PointCloudToLaserScanNode::cloudCallback(
     }
   }
 
+  std::unique_ptr<GhostFilter> ghost;
+  if (ghost_filter_enable_) {
+    ghost = std::make_unique<GhostFilter>(ghost_params_);
+  }
+
   // Iterate through pointcloud
   for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(*cloud_msg, "x"),
     iter_y(*cloud_msg, "y"), iter_z(*cloud_msg, "z");
@@ -380,6 +406,11 @@ void PointCloudToLaserScanNode::cloudCallback(
         "rejected for height %f not in range (%f, %f)\n",
         *iter_z, min_height_, max_height_);
       continue;
+    }
+
+    // Ghost-filter neighbor pool: every slab point, including self-box and out-of-range ones.
+    if (ghost) {
+      ghost->addPoolPoint(*iter_x, *iter_y, *iter_z);
     }
 
     // Self-filter on x/y: drop points INSIDE the body box, or (union) inside the padded footprint.
@@ -423,9 +454,17 @@ void PointCloudToLaserScanNode::cloudCallback(
 
     // overwrite range at laserscan ray if new range is smaller
     int index = (angle - scan_msg->angle_min) / scan_msg->angle_increment;
+    if (ghost) {
+      ghost->addScanPoint(*iter_x, *iter_y, *iter_z, index, range);
+    }
     if (range < scan_msg->ranges[index]) {
       scan_msg->ranges[index] = range;
     }
+  }
+
+  if (ghost) {
+    const std::size_t changed = ghost->apply(scan_msg->ranges);
+    RCLCPP_DEBUG(this->get_logger(), "ghost filter moved %zu bins", changed);
   }
   pub_->publish(std::move(scan_msg));
 }
