@@ -98,6 +98,10 @@ private:
   // Inside the polygon (even-odd) OR within padding of any edge. Works for concave polygons.
   bool insideFootprint(const SelfFootprint & fp, double x, double y) const;
 
+  // Validates and applies live min/max_height changes (rqt_reconfigure, ros2 param set).
+  rcl_interfaces::msg::SetParametersResult onParametersSet(
+    const std::vector<rclcpp::Parameter> & parameters);
+
   void subscriptionListenerThreadLoop();
 
   std::unique_ptr<tf2_ros::Buffer> tf2_;
@@ -120,6 +124,11 @@ private:
     range_max_;
   bool use_inf_;
   double inf_epsilon_;
+
+  // min_height_/max_height_ are live-tunable; guarded since cloudCallback may run on the TF
+  // listener thread while the parameter callback runs on the executor.
+  std::mutex height_mutex_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
   // Axis-aligned self-filter: drop points that fall INSIDE this x/y box (the robot body).
   // z is handled by min_height_/max_height_. Bounds are evaluated in target_frame (base_link).

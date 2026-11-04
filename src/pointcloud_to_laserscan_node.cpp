@@ -119,7 +119,11 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
       ghost_params_.radius_ratio, ghost_params_.behind_distance);
   }
 
-  pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>(scan_topic_, rclcpp::SensorDataQoS());
+  // Registered after all declarations so it only sees runtime changes.
+  param_cb_handle_ = this->add_on_set_parameters_callback(
+    std::bind(&PointCloudToLaserScanNode::onParametersSet, this, std::placeholders::_1));
+
+  pub_ =this->create_publisher<sensor_msgs::msg::LaserScan>(scan_topic_, rclcpp::SensorDataQoS());
 
   using std::placeholders::_1;
   // if pointcloud target frame specified, we need to filter by transform availability
@@ -194,6 +198,41 @@ void PointCloudToLaserScanNode::subscriptionListenerThreadLoop()
     this->wait_for_graph_change(event, timeout);
   }
   sub_.unsubscribe();
+}
+
+rcl_interfaces::msg::SetParametersResult PointCloudToLaserScanNode::onParametersSet(
+  const std::vector<rclcpp::Parameter> & parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  std::lock_guard<std::mutex> lock(height_mutex_);
+  double min_height = min_height_;
+  double max_height = max_height_;
+  bool touched = false;
+  for (const auto & p : parameters) {
+    if (p.get_name() == "min_height") {
+      min_height = p.as_double();
+      touched = true;
+    } else if (p.get_name() == "max_height") {
+      max_height = p.as_double();
+      touched = true;
+    }
+  }
+  if (!touched) {
+    return result;
+  }
+  // An inverted slab would publish an all-empty scan, which clears obstacles downstream.
+  if (min_height >= max_height) {
+    result.successful = false;
+    result.reason = "min_height (" + std::to_string(min_height) + ") must be < max_height (" +
+      std::to_string(max_height) + ")";
+    return result;
+  }
+  min_height_ = min_height;
+  max_height_ = max_height;
+  RCLCPP_INFO(this->get_logger(), "Height slab set to [%.3f, %.3f] m", min_height_, max_height_);
+  return result;
 }
 
 void PointCloudToLaserScanNode::footprintCallback(
@@ -367,6 +406,14 @@ void PointCloudToLaserScanNode::cloudCallback(
     }
   }
 
+  // Snapshot the slab once per frame so a live change never splits a scan.
+  double min_height, max_height;
+  {
+    std::lock_guard<std::mutex> lock(height_mutex_);
+    min_height = min_height_;
+    max_height = max_height_;
+  }
+
   std::unique_ptr<GhostFilter> ghost;
   if (ghost_filter_enable_) {
     ghost = std::make_unique<GhostFilter>(ghost_params_);
@@ -400,11 +447,11 @@ void PointCloudToLaserScanNode::cloudCallback(
       continue;
     }
 
-    if (*iter_z > max_height_ || *iter_z < min_height_) {
+    if (*iter_z > max_height || *iter_z < min_height) {
       RCLCPP_DEBUG(
         this->get_logger(),
         "rejected for height %f not in range (%f, %f)\n",
-        *iter_z, min_height_, max_height_);
+        *iter_z, min_height, max_height);
       continue;
     }
 
