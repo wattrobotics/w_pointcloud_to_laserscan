@@ -12,6 +12,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
+find_package(w_db_manager_interfaces REQUIRED)
+find_package(w_floor_perception_msgs REQUIRED)
 
 add_library(laserscan_to_pointcloud SHARED
   src/laserscan_to_pointcloud_node.cpp)
@@ -51,6 +53,8 @@ target_link_libraries(pointcloud_to_laserscan
   tf2::tf2
   tf2_ros::tf2_ros
   tf2_sensor_msgs::tf2_sensor_msgs
+  ${w_db_manager_interfaces_TARGETS}
+  ${w_floor_perception_msgs_TARGETS}
 )
 rclcpp_components_register_node(pointcloud_to_laserscan
   PLUGIN "pointcloud_to_laserscan::PointCloudToLaserScanNode"
@@ -92,6 +96,10 @@ install(DIRECTORY config
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_height_zone test/test_height_zone.cpp)
+  target_include_directories(test_height_zone PRIVATE include)
 endif()
 
 ament_export_dependencies(
@@ -104,6 +112,8 @@ ament_export_dependencies(
   tf2
   tf2_ros
   tf2_sensor_msgs
+  w_db_manager_interfaces
+  w_floor_perception_msgs
 )
 
 ament_package()

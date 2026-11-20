@@ -41,6 +41,7 @@
 #include "pointcloud_to_laserscan/pointcloud_to_laserscan_node.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <functional>
 #include <limits>
@@ -152,6 +153,8 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
       ghost_params_.radius_ratio, ghost_params_.behind_distance);
   }
 
+  declareHeightZones();
+
   // Registered after all declarations so it only sees runtime changes.
   param_cb_handle_ = this->add_on_set_parameters_callback(
     std::bind(&PointCloudToLaserScanNode::onParametersSet, this, std::placeholders::_1));
@@ -194,8 +197,203 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
     }
   }
 
+  if (!zones_.empty()) {
+    startHeightZones();
+  }
+
   subscription_listener_thread_ = std::thread(
     std::bind(&PointCloudToLaserScanNode::subscriptionListenerThreadLoop, this));
+}
+
+void PointCloudToLaserScanNode::declareHeightZones()
+{
+  zone_robot_frame_ = this->declare_parameter("height_zone_robot_frame", "base_link");
+  zone_floor_timeout_ = this->declare_parameter("height_zone_floor_timeout", 3.0);
+  zone_lookup_period_ = this->declare_parameter("height_zone_lookup_period", 30.0);
+  zone_lookup_service_ = this->declare_parameter(
+    "height_zone_lookup_service", "/db_manager/find_destination");
+  for (const auto & name : this->declare_parameter(
+      "height_zones", std::vector<std::string>{}))
+  {
+    height_zone::Zone z;
+    z.name = name;
+    if (name.empty() || name.find('.') != std::string::npos) {
+      RCLCPP_WARN(this->get_logger(), "height_zones: '%s' ignored (invalid name)", name.c_str());
+      continue;
+    }
+    z.point_code = this->declare_parameter(name + ".point_code", "");
+    z.profile = this->declare_parameter(name + ".profile", "");
+    z.radius = this->declare_parameter(name + ".radius", 3.0);
+    z.exit_margin = this->declare_parameter(name + ".exit_margin", 0.3);
+    z.frame = this->declare_parameter(name + ".frame", "map");
+    std::string bad;
+    if (z.point_code.empty()) {
+      bad = "point_code is empty";
+    } else if (profiles_.find(z.profile) == profiles_.end()) {
+      bad = "profile '" + z.profile + "' is not in height_profiles";
+    } else if (!(z.radius > 0.0) || !(z.exit_margin >= 0.0)) {
+      bad = "radius must be > 0 and exit_margin >= 0";
+    }
+    if (!bad.empty()) {
+      RCLCPP_ERROR(this->get_logger(), "Height zone '%s' skipped: %s", name.c_str(), bad.c_str());
+      continue;
+    }
+    zones_.push_back(z);
+  }
+  zone_pending_.assign(zones_.size(), false);
+  zone_warned_.assign(zones_.size(), false);
+}
+
+void PointCloudToLaserScanNode::startHeightZones()
+{
+  if (!tf2_) {  // target_frame empty -> no TF yet
+    tf2_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf2_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf2_);
+  }
+  // One mutually exclusive group: tick, floor and lookup responses never run concurrently.
+  zone_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions sub_opts;
+  sub_opts.callback_group = zone_cb_group_;
+  const auto floor_topic = this->declare_parameter("height_zone_floor_topic", "/current_floor");
+  floor_sub_ = this->create_subscription<w_floor_perception_msgs::msg::FloorInfo>(
+    floor_topic, rclcpp::QoS(10),
+    [this](w_floor_perception_msgs::msg::FloorInfo::ConstSharedPtr msg) {
+      floor_label_ = height_zone::normalizeFloor(msg->floor_label);
+      floor_stamp_ = std::chrono::steady_clock::now();
+    }, sub_opts);
+  zone_client_ = this->create_client<FindDestination>(
+    zone_lookup_service_, rclcpp::ServicesQoS(), zone_cb_group_);
+  next_lookup_ = std::chrono::steady_clock::now();
+  const double period = this->declare_parameter("height_zone_period", 0.5);
+  zone_timer_ = this->create_wall_timer(
+    std::chrono::duration<double>(period), std::bind(&PointCloudToLaserScanNode::heightZoneTick, this),
+    zone_cb_group_);
+  for (const auto & z : zones_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Height zone '%s': point '%s' (DB) radius %.2f m, exit +%.2f m, frame %s -> profile '%s'. "
+      "Zones own height_profile; manual sets are rejected.",
+      z.name.c_str(), z.point_code.c_str(), z.radius, z.exit_margin, z.frame.c_str(),
+      z.profile.c_str());
+  }
+}
+
+void PointCloudToLaserScanNode::requestZoneLookups()
+{
+  zone_client_->prune_pending_requests();  // drop answers that never came
+  if (!zone_client_->service_is_ready()) {
+    if (!zone_service_warned_) {
+      RCLCPP_WARN(
+        this->get_logger(), "Height zones: service %s unavailable; unresolved zones stay off "
+        "(retry every %.0f s).", zone_lookup_service_.c_str(), zone_lookup_period_);
+      zone_service_warned_ = true;
+    }
+    return;
+  }
+  zone_service_warned_ = false;
+  for (size_t i = 0; i < zones_.size(); ++i) {
+    if (zones_[i].resolved) {
+      continue;
+    }
+    auto req = std::make_shared<FindDestination::Request>();
+    req->destination = zones_[i].point_code;
+    req->use_floor = false;
+    zone_client_->async_send_request(
+      req, [this, i](rclcpp::Client<FindDestination>::SharedFuture f) {
+        const auto r = f.get();
+        auto & z = zones_[i];
+        if (!r->found) {
+          if (!zone_warned_[i]) {
+            RCLCPP_WARN(
+              this->get_logger(), "Height zone '%s': point '%s' not found in robot DB "
+              "(%zu candidates); zone skipped, retry every %.0f s.", z.name.c_str(),
+              z.point_code.c_str(), r->candidates.size(), zone_lookup_period_);
+            zone_warned_[i] = true;
+          }
+          return;
+        }
+        z.x = r->x;
+        z.y = r->y;
+        z.floor = height_zone::normalizeFloor(r->floor);
+        z.resolved = true;
+        RCLCPP_INFO(
+          this->get_logger(), "Height zone '%s': point '%s' = (%.3f, %.3f) floor '%s' [%s]",
+          z.name.c_str(), z.point_code.c_str(), z.x, z.y, z.floor.c_str(), z.frame.c_str());
+        if (z.floor.empty()) {
+          RCLCPP_WARN(
+            this->get_logger(), "Height zone '%s': DB point has no floor; zone never matches.",
+            z.name.c_str());
+        }
+      });
+  }
+}
+
+void PointCloudToLaserScanNode::heightZoneTick()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now >= next_lookup_) {
+    next_lookup_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(zone_lookup_period_));
+    requestZoneLookups();
+  }
+
+  height_zone::Observation obs;
+  obs.floor_ok = !floor_label_.empty() &&
+    std::chrono::duration<double>(now - floor_stamp_).count() < zone_floor_timeout_;
+  obs.floor = floor_label_;
+  obs.poses.resize(zones_.size());
+  for (size_t i = 0; i < zones_.size(); ++i) {
+    if (!zones_[i].resolved) {
+      continue;
+    }
+    try {
+      const auto t = tf2_->lookupTransform(
+        zones_[i].frame, zone_robot_frame_, tf2::TimePointZero).transform.translation;
+      obs.poses[i] = {true, t.x, t.y};
+    } catch (const tf2::TransformException & e) {
+      if (!zone_tf_warned_) {
+        RCLCPP_WARN(
+          this->get_logger(), "Height zones: TF %s->%s unavailable (%s); keeping profile.",
+          zones_[i].frame.c_str(), zone_robot_frame_.c_str(), e.what());
+        zone_tf_warned_ = true;
+      }
+    }
+  }
+
+  const auto d = height_zone::decide(zones_, active_zone_, obs);
+  if (d.zone != active_zone_) {
+    const std::string floor = obs.floor_ok ? obs.floor : "?";
+    if (active_zone_ >= 0) {
+      const auto & z = zones_[active_zone_];
+      const auto & p = obs.poses[active_zone_];
+      RCLCPP_INFO(
+        this->get_logger(), "Height zone '%s' left (%.2f m > %.2f m or other floor, floor %s)",
+        z.name.c_str(), std::hypot(p.x - z.x, p.y - z.y), z.radius + z.exit_margin,
+        floor.c_str());
+    }
+    if (d.zone >= 0) {
+      RCLCPP_INFO(
+        this->get_logger(), "Height zone '%s' entered (%.2f m <= %.2f m, floor %s)",
+        zones_[d.zone].name.c_str(), d.distance, zones_[d.zone].radius, floor.c_str());
+    }
+    active_zone_ = d.zone;
+  }
+
+  const std::string want = active_zone_ >= 0 ? zones_[active_zone_].profile : kDefaultProfile;
+  {
+    std::lock_guard<std::mutex> lock(height_mutex_);
+    if (want == active_profile_) {
+      return;
+    }
+  }
+  zone_set_thread_.store(std::this_thread::get_id());
+  const auto r = this->set_parameter(rclcpp::Parameter("height_profile", want));
+  zone_set_thread_.store(std::thread::id{});
+  if (!r.successful) {
+    RCLCPP_ERROR_THROTTLE(
+      this->get_logger(), *this->get_clock(), 10000, "Height zones: set height_profile '%s' "
+      "failed: %s", want.c_str(), r.reason.c_str());
+  }
 }
 
 PointCloudToLaserScanNode::~PointCloudToLaserScanNode()
@@ -251,6 +449,15 @@ rcl_interfaces::msg::SetParametersResult PointCloudToLaserScanNode::onParameters
     } else if (n == "max_height") {
       base.second = p.as_double();
     } else if (n == "height_profile") {
+      if (!zones_.empty() && zone_set_thread_.load() != std::this_thread::get_id()) {
+        result.successful = false;
+        result.reason = "height_zones is on: the zone decision owns height_profile (now '" +
+          active_profile_ + "')";
+        RCLCPP_WARN(
+          this->get_logger(), "Manual height_profile '%s' overridden (rejected): %s",
+          p.as_string().c_str(), result.reason.c_str());
+        return result;
+      }
       active = p.as_string();
     } else {
       // <profile>.min_height / <profile>.max_height of a declared profile

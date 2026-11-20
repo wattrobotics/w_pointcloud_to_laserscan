@@ -61,7 +61,11 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 
+#include "w_db_manager_interfaces/srv/find_destination.hpp"
+#include "w_floor_perception_msgs/msg/floor_info.hpp"
+
 #include "pointcloud_to_laserscan/ghost_filter.hpp"
+#include "pointcloud_to_laserscan/height_zone.hpp"
 #include "pointcloud_to_laserscan/visibility_control.h"
 
 namespace pointcloud_to_laserscan
@@ -106,6 +110,12 @@ private:
 
   void subscriptionListenerThreadLoop();
 
+  // Height zones: declare params (before the param callback), then TF/floor/lookup/timer.
+  void declareHeightZones();
+  void startHeightZones();
+  void heightZoneTick();
+  void requestZoneLookups();
+
   std::unique_ptr<tf2_ros::Buffer> tf2_;
   std::unique_ptr<tf2_ros::TransformListener> tf2_listener_;
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> sub_;
@@ -140,6 +150,28 @@ private:
   std::pair<double, double> base_slab_;
   std::map<std::string, std::pair<double, double>> profiles_;
   std::string active_profile_;
+
+  // Position-based profile switching (height_zone.hpp). `height_zones` empty = off and
+  // `height_profile` stays manual. When on, the zone decision owns `height_profile`: the tick
+  // sets it itself (from zone_set_thread_) and any other set of it is rejected.
+  using FindDestination = w_db_manager_interfaces::srv::FindDestination;
+  std::vector<height_zone::Zone> zones_;
+  std::vector<bool> zone_pending_, zone_warned_;
+  int active_zone_{-1};
+  std::string zone_robot_frame_;
+  double zone_floor_timeout_{3.0};
+  double zone_lookup_period_{30.0};
+  std::string zone_lookup_service_;
+  std::string floor_label_;  // normalised
+  std::chrono::steady_clock::time_point floor_stamp_;
+  std::chrono::steady_clock::time_point next_lookup_;
+  bool zone_service_warned_{false};
+  bool zone_tf_warned_{false};
+  std::atomic<std::thread::id> zone_set_thread_{};
+  rclcpp::CallbackGroup::SharedPtr zone_cb_group_;
+  rclcpp::TimerBase::SharedPtr zone_timer_;
+  rclcpp::Subscription<w_floor_perception_msgs::msg::FloorInfo>::SharedPtr floor_sub_;
+  rclcpp::Client<FindDestination>::SharedPtr zone_client_;
 
   // Axis-aligned self-filter: drop points that fall INSIDE this x/y box (the robot body).
   // z is handled by min_height_/max_height_. Bounds are evaluated in target_frame (base_link).
