@@ -45,8 +45,10 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 
 #include "sensor_msgs/point_cloud2_iterator.hpp"
@@ -79,6 +81,37 @@ PointCloudToLaserScanNode::PointCloudToLaserScanNode(const rclcpp::NodeOptions &
   range_max_ = this->declare_parameter("range_max", std::numeric_limits<double>::max());
   inf_epsilon_ = this->declare_parameter("inf_epsilon", 1.0);
   use_inf_ = this->declare_parameter("use_inf", true);
+
+  // Named height profiles (see header). Each profile's slab defaults to the base slab.
+  base_slab_ = {min_height_, max_height_};
+  for (const auto & name : this->declare_parameter(
+      "height_profiles", std::vector<std::string>{}))
+  {
+    if (name.empty() || name == kDefaultProfile || name.find('.') != std::string::npos) {
+      RCLCPP_WARN(this->get_logger(), "height_profiles: '%s' ignored (reserved/invalid)", name.c_str());
+      continue;
+    }
+    const double lo = this->declare_parameter(name + ".min_height", base_slab_.first);
+    const double hi = this->declare_parameter(name + ".max_height", base_slab_.second);
+    if (lo >= hi) {
+      throw std::invalid_argument(
+              "height profile '" + name + "': min_height must be < max_height");
+    }
+    profiles_[name] = {lo, hi};
+    RCLCPP_INFO(this->get_logger(), "Height profile '%s': [%.3f, %.3f] m", name.c_str(), lo, hi);
+  }
+  active_profile_ = this->declare_parameter("height_profile", std::string(kDefaultProfile));
+  if (active_profile_ != kDefaultProfile) {
+    auto it = profiles_.find(active_profile_);
+    if (it == profiles_.end()) {
+      throw std::invalid_argument(
+              "height_profile '" + active_profile_ + "' is not in height_profiles");
+    }
+    std::tie(min_height_, max_height_) = it->second;
+  }
+  RCLCPP_INFO(
+    this->get_logger(), "Height slab [%s]: [%.3f, %.3f] m", active_profile_.c_str(),
+    min_height_, max_height_);
 
   // Axis-aligned self-filter on x/y: drop points INSIDE the box (robot body).
   // Defaults to a zero-size box so an accidental enable removes nothing.
@@ -207,31 +240,68 @@ rcl_interfaces::msg::SetParametersResult PointCloudToLaserScanNode::onParameters
   result.successful = true;
 
   std::lock_guard<std::mutex> lock(height_mutex_);
-  double min_height = min_height_;
-  double max_height = max_height_;
+  auto base = base_slab_;
+  auto profiles = profiles_;
+  auto active = active_profile_;
   bool touched = false;
   for (const auto & p : parameters) {
-    if (p.get_name() == "min_height") {
-      min_height = p.as_double();
-      touched = true;
-    } else if (p.get_name() == "max_height") {
-      max_height = p.as_double();
-      touched = true;
+    const std::string & n = p.get_name();
+    if (n == "min_height") {
+      base.first = p.as_double();
+    } else if (n == "max_height") {
+      base.second = p.as_double();
+    } else if (n == "height_profile") {
+      active = p.as_string();
+    } else {
+      // <profile>.min_height / <profile>.max_height of a declared profile
+      const auto dot = n.rfind('.');
+      if (dot == std::string::npos) {
+        continue;
+      }
+      auto it = profiles.find(n.substr(0, dot));
+      const std::string key = n.substr(dot + 1);
+      if (it == profiles.end() || (key != "min_height" && key != "max_height")) {
+        continue;
+      }
+      (key == "min_height" ? it->second.first : it->second.second) = p.as_double();
     }
+    touched = true;
   }
   if (!touched) {
     return result;
   }
   // An inverted slab would publish an all-empty scan, which clears obstacles downstream.
-  if (min_height >= max_height) {
-    result.successful = false;
-    result.reason = "min_height (" + std::to_string(min_height) + ") must be < max_height (" +
-      std::to_string(max_height) + ")";
+  auto inverted = [&result](const std::string & what, const std::pair<double, double> & slab) {
+      if (slab.first < slab.second) {
+        return false;
+      }
+      result.successful = false;
+      result.reason = what + ": min_height (" + std::to_string(slab.first) +
+        ") must be < max_height (" + std::to_string(slab.second) + ")";
+      return true;
+    };
+  if (inverted("default", base)) {
     return result;
   }
-  min_height_ = min_height;
-  max_height_ = max_height;
-  RCLCPP_INFO(this->get_logger(), "Height slab set to [%.3f, %.3f] m", min_height_, max_height_);
+  for (const auto & kv : profiles) {
+    if (inverted(kv.first, kv.second)) {
+      return result;
+    }
+  }
+  if (active != kDefaultProfile && profiles.find(active) == profiles.end()) {
+    result.successful = false;
+    result.reason = "height_profile '" + active + "' is not in height_profiles";
+    return result;
+  }
+  base_slab_ = base;
+  profiles_ = profiles;
+  const bool switched = active != active_profile_;
+  active_profile_ = active;
+  std::tie(min_height_, max_height_) =
+    active_profile_ == kDefaultProfile ? base_slab_ : profiles_.at(active_profile_);
+  RCLCPP_INFO(
+    this->get_logger(), "Height slab [%s]%s: [%.3f, %.3f] m", active_profile_.c_str(),
+    switched ? " (switched)" : "", min_height_, max_height_);
   return result;
 }
 

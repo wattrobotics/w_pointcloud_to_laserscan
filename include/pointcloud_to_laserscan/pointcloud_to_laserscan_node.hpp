@@ -43,8 +43,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <string>
 #include <thread>
 #include <vector>
@@ -129,6 +131,15 @@ private:
   // listener thread while the parameter callback runs on the executor.
   std::mutex height_mutex_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+
+  // Named height slabs, switched at runtime by `height_profile` (e.g. a lower-clearance slab while
+  // docking under a station). "default" = min_height/max_height. Each name listed in
+  // `height_profiles` reads `<name>.min_height` / `<name>.max_height`.
+  // min_height_/max_height_ above always hold the ACTIVE slab used by cloudCallback.
+  static constexpr const char * kDefaultProfile = "default";
+  std::pair<double, double> base_slab_;
+  std::map<std::string, std::pair<double, double>> profiles_;
+  std::string active_profile_;
 
   // Axis-aligned self-filter: drop points that fall INSIDE this x/y box (the robot body).
   // z is handled by min_height_/max_height_. Bounds are evaluated in target_frame (base_link).
